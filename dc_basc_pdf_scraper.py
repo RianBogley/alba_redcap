@@ -20,12 +20,6 @@ import time
 import matplotlib.cm as cm
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import nibabel as nib
-import nilearn.datasets
-import nilearn.decoding as decoding
-import nilearn.image as image
-import nilearn.maskers as maskers
-import nilearn.plotting as plotting
 import numpy as np
 import openpyxl
 import pandas as pd
@@ -65,8 +59,6 @@ from statsmodels.stats.anova import anova_lm
 from statsmodels.stats.contingency_tables import StratifiedTable
 
 # ---------------------------------------------------------------------------- #
-# %%
-# ---------------------------------------------------------------------------- #
 #                            IMPORT CUSTOM LIBRARIES                           #
 # ---------------------------------------------------------------------------- #
 print("Importing custom libraries...")
@@ -82,10 +74,7 @@ code_dir = 'C:/Users/rbogley/code/github_tools/'
 git clone https://github.com/RianBogley/alba-redcap-tools.git
 """
 # Once complete, you can import the scripts using the following code:
-lava_tools_path = code_dir + 'alba-lava-tools'
-neuroimaging_tools_path = code_dir + 'alba-neuroimaging-tools'
 redcap_tools_path = code_dir + 'alba-redcap-tools'
-misc_tools_path = code_dir + 'alba-misc-tools'
 
 # ---------------------------- IMPORT REDCAP TOOLS --------------------------- #
 sys.path.append(redcap_tools_path)
@@ -104,6 +93,7 @@ from redcap_import_data import import_data_redcap
 print("Input your REDCap API token to export data from REDCap.")
 token = getpass.getpass("Enter REDCap API token:")
 pidn = input("Enter PIDN to export:")
+pidn = int(pidn)
 visit = input("Enter REDCap Visit Number to export (e.g. 'visit_one_arm_1'):")
 # ---------------------------------------------------------------------------- #
 # Set instrument of interest:
@@ -140,24 +130,23 @@ elif basc_df[field].values[0] != '':
 basc_pdf = export_redcap_file(token, pidn, visit, field)
 basc_pdf_filepath = basc_pdf.name
 
-# %%
+
+
 # ---------------------------------------------------------------------------- #
 #                               DEFINE FUNCTIONS                               #
 # ---------------------------------------------------------------------------- #
 
+# TODO: SCRIPT NOT SAVING VALUES!!!! UGH!!!
+
 # TODO: CHECK IF THE PDF IF SELF-REPORT
 
-# TODO: ADD VALIDITY INDEX READER
-
-# TODO: RE-ADD COMMENTS AND CONCERNS AND STRENGTHS READER
-
-def find_page_number(pdf_reader, keywords):
+def find_page_index(pdf_reader, keywords):
     for i, page in enumerate(pdf_reader.pages):
         text = page.extract_text()
         if any(keyword in text for keyword in keywords):
-            return i + 1
+            return i
 
-def find_table_number(data, keywords):
+def find_table_index(data, keywords):
     for i, table in enumerate(data):
         if all(keyword in table.to_string() for keyword in keywords):
             return i
@@ -202,17 +191,44 @@ def clean_table(table):
     return table
 
 def save_table_values(df, table, variables_dict):
+    # NOTE: TODO: ONLY CHANGES FIRST ROW OF THE DF, DOES NOT WORK FOR MULTIPLE PIDNS
     for variable in variables_dict:
-        # Save the raw score to the dataframe to the column that matches the variable name + "_raw":
-        df.loc[(df['id_number'] == pidn) & (df['redcap_event_name'] == visit), variables_dict[variable] + '_raw'] = table.loc[table['Domain'] == variable, 'Raw Score'].values[0]
-        # Save the t score to the dataframe to the column that matches the variable name + "_tscore":
-        df.loc[(df['id_number'] == pidn) & (df['redcap_event_name'] == visit), variables_dict[variable] + '_tscore'] = table.loc[table['Domain'] == variable, 'T Score'].values[0]
-        # Save the percentile to the dataframe to the column that matches the variable name + "_per":
-        df.loc[(df['id_number'] == pidn) & (df['redcap_event_name'] == visit), variables_dict[variable] + '_per'] = table.loc[table['Domain'] == variable, 'Percentile'].values[0]
+        # Save the raw score to the first row of the dataframe:
+        df[variables_dict[variable] + '_raw'] = table.loc[table['Domain'] == variable, 'Raw Score'].values[0]
+        # Save the t score to the first row of the dataframe:
+        df[variables_dict[variable] + '_tscore'] = table.loc[table['Domain'] == variable, 'T Score'].values[0]
+        # Save the percentile to the first row of the dataframe:
+        df[variables_dict[variable] + '_per'] = table.loc[table['Domain'] == variable, 'Percentile'].values[0]
     return df
 
+def extract_page_text(pdf_reader, page_number):
+    # Import all the text on the specified page of the pdf:
+    full_text = pdf_reader.pages[page_number].extract_text()
+    # Replace all new line characters with spaces:
+    full_text = full_text.replace('\n', ' ')
+    # Return the text on the page
+    return full_text
+
+def find_string_in_text(full_text, keyword_start, keyword_end):
+    # Check if both keywords exist in the text:
+    if keyword_start not in full_text or keyword_end not in full_text:
+        print(f'ERROR: {keyword_start} not found.')
+        print(f'Please check the pdf and try again.')
+        pass
+    else:
+        # Find the start and end indices of the text between the keywords:
+        start_index = full_text.find(keyword_start) + len(keyword_start)
+        end_index = full_text.find(keyword_end)
+        # Extract the text between the keywords:
+        text = full_text[start_index:end_index]
+        # Remove any trailing spaces:
+        text = text.strip()
+        # Return the text:
+        return text
+    
+
 # ---------------------------------------------------------------------------- #
-# %%
+
 # ---------------------------------------------------------------------------- #
 #                             READ IN THE PDF DATA                             #
 # ---------------------------------------------------------------------------- #
@@ -220,84 +236,112 @@ with open(basc_pdf_filepath, 'rb') as file:
     pdf_reader = PdfReader(file)
     
     # Find the page numbers for the tables:
-    composite_score_page = find_page_number(pdf_reader, ['Composite Score Summary'])
-    scale_score_page = find_page_number(pdf_reader, ['Scale Score Summary'])
-    content_scale_score_page = find_page_number(pdf_reader, ['CONTENT SCALE SCORE TABLE:','The information provided below is'])
-    validity_index_page = find_page_number(pdf_reader, ['VALIDITY INDEX SUMMARY', 'Validity Index Summary'])
+    comments_concerns_page = find_page_index(pdf_reader, ['COMMENTS AND CONCERNS', 'Rater Concerns'])
+    composite_score_page = find_page_index(pdf_reader, ['Composite Score Summary'])
+    scale_score_page = find_page_index(pdf_reader, ['Scale Score Summary'])
+    content_scale_score_page = find_page_index(pdf_reader, ['CONTENT SCALE SCORE TABLE:','The information provided below is'])
+    validity_index_page = find_page_index(pdf_reader, ['VALIDITY INDEX SUMMARY', 'Validity Index Summary'])
 
 data = tb.read_pdf(basc_pdf_filepath, pages='all', multiple_tables=True)
 
-# Find the table numbers for the tables on each page using find_table_number:
+
+
+# COMMENTS AND CONCERNS TEXT:
+if comments_concerns_page is not None:
+    # Extract the page text:
+    comments_concerns_text = extract_page_text(pdf_reader, comments_concerns_page)
+
+    # Set the keywords:
+    keyword_rater_concerns_start = 'Rater Concerns'
+    keyword_rater_concerns_end = 'Rater General Comments'
+    keyword_rater_general_strengths = 'What are the behavioral and/or emotional strengths of this child?'
+    keyword_rater_general_concerns = 'Please list any specific behavioral and/or emotional concerns you have about this child.'
+    keyword_comments_concerns_end = 'BASC™-'
+
+    # Rater Concerns:
+    basc_rater_concerns = find_string_in_text(comments_concerns_text, keyword_rater_concerns_start, keyword_rater_concerns_end)
+    print(f'Rater Concerns: {basc_rater_concerns}')
+    basc_df = basc_df.assign(basc_rater_concerns = basc_rater_concerns)
+
+    # Rater General Strengths:
+    basc_general_strengths = find_string_in_text(comments_concerns_text, keyword_rater_general_strengths, keyword_rater_general_concerns)
+    print(f'Rater General Strengths: {basc_general_strengths}')
+    basc_df = basc_df.assign(basc_general_strengths = basc_general_strengths)
+
+    # Rater General Concerns:
+    basc_general_concerns = find_string_in_text(comments_concerns_text, keyword_rater_general_concerns, keyword_comments_concerns_end)
+    print(f'Rater General Concerns: {basc_general_concerns}')
+    basc_df = basc_df.assign(basc_general_concerns = basc_general_concerns)
+
 # COMPOSITE SCORE SUMMARY TABLE:
-composite_score_variables = {'Externalizing Problems': 'basc_externalizing',
-                                'Internalizing Problems': 'basc_internalizing',
-                                'Behavioral Symptoms Index': 'basc_behavior',
-                                'Adaptive Skills': 'basc_adaptiveskill'}
-# Find the table:
-composite_score_table = data[find_table_number(data, composite_score_variables.keys())]
-# Clean the table:
-composite_score_table = clean_table(composite_score_table)
+if composite_score_page is not None:
+    composite_score_variables = {'Externalizing Problems': 'basc_externalizing',
+                                    'Internalizing Problems': 'basc_internalizing',
+                                    'Behavioral Symptoms Index': 'basc_behavior',
+                                    'Adaptive Skills': 'basc_adaptiveskill'}
+    # Find the table:
+    composite_score_table = data[find_table_index(data, composite_score_variables.keys())]
+    # Clean the table:
+    composite_score_table = clean_table(composite_score_table)
+    print(composite_score_table)
 
-print(composite_score_table)
-
-# Save the table values to the dataframe:
-basc_df = save_table_values(basc_df, composite_score_table, composite_score_variables)
+    # Save the table values to the dataframe:
+    basc_df = save_table_values(basc_df, composite_score_table, composite_score_variables)
 
 # SCALE SCORE SUMMARY TABLE:
-scale_score_variables = {'Hyperactivity': 'basc_hyperactivity',
-                            'Aggression': 'basc_aggression',
-                            'Conduct Problems': 'basc_conduct',
-                            'Anxiety': 'basc_anxiety',
-                            'Depression': 'basc_depression',
-                            'Somatization': 'basc_somatization',
-                            'Atypicality': 'basc_atypicality',
-                            'Withdrawal': 'basc_withdrawal',
-                            'Attention Problems': 'basc_attention',
-                            'Adaptability': 'basc_adaptability',
-                            'Social Skills': 'basc_socialskill',
-                            'Leadership': 'basc_leadership',
-                            'Activities of Daily Living': 'basc_dailyliving',
-                            'Functional Communication': 'basc_functcomm'}
-# Find the table:
-scale_score_table = data[find_table_number(data, scale_score_variables.keys())]
-# Clean the table:
-scale_score_table = clean_table(scale_score_table)
-
-print(scale_score_table)
-
-# Save the table values to the dataframe:
-basc_df = save_table_values(basc_df, scale_score_table, scale_score_variables)
+if scale_score_page is not None:
+    scale_score_variables = {'Hyperactivity': 'basc_hyperactivity',
+                                'Aggression': 'basc_aggression',
+                                'Conduct Problems': 'basc_conduct',
+                                'Anxiety': 'basc_anxiety',
+                                'Depression': 'basc_depression',
+                                'Somatization': 'basc_somatization',
+                                'Atypicality': 'basc_atypicality',
+                                'Withdrawal': 'basc_withdrawal',
+                                'Attention Problems': 'basc_attention',
+                                'Adaptability': 'basc_adaptability',
+                                'Social Skills': 'basc_socialskill',
+                                'Leadership': 'basc_leadership',
+                                'Activities of Daily Living': 'basc_dailyliving',
+                                'Functional Communication': 'basc_functcomm'}
+    # Find the table:
+    scale_score_table = data[find_table_index(data, scale_score_variables.keys())]
+    # Clean the table:
+    scale_score_table = clean_table(scale_score_table)
+    print(scale_score_table)
+    # Save the table values to the dataframe:
+    basc_df = save_table_values(basc_df, scale_score_table, scale_score_variables)
 
 # CONTENT SCALE SCORE TABLE:
-content_scale_score_variables = {'Anger Control': 'basc_angercontrol',
-                                    'Bullying': 'basc_bullying',
-                                    'Developmental Social Disorders': 'basc_socialdisord',
-                                    'Emotional Self-Control': 'basc_emotioncontrol',
-                                    'Executive Functioning': 'basc_execfunc',
-                                    'Negative Emotionality': 'basc_negemotion',
-                                    'Resiliency': 'basc_resiliency'}
-# Find the table:
-content_scale_score_table = data[find_table_number(data,[key for key in content_scale_score_variables.keys() if key != 'Developmental Social Disorders'])]
-# Clean the table:
-content_scale_score_table = clean_table(content_scale_score_table)
+if content_scale_score_page is not None:
+    content_scale_score_variables = {'Anger Control': 'basc_angercontrol',
+                                        'Bullying': 'basc_bullying',
+                                        'Developmental Social Disorders': 'basc_socialdisord',
+                                        'Emotional Self-Control': 'basc_emotioncontrol',
+                                        'Executive Functioning': 'basc_execfunc',
+                                        'Negative Emotionality': 'basc_negemotion',
+                                        'Resiliency': 'basc_resiliency'}
+    # Find the table:
+    content_scale_score_table = data[find_table_index(data,[key for key in content_scale_score_variables.keys() if key != 'Developmental Social Disorders'])]
+    # Clean the table:
+    content_scale_score_table = clean_table(content_scale_score_table)
+    print(content_scale_score_table)
+    # Save the table values to the dataframe:
+    basc_df = save_table_values(basc_df, content_scale_score_table, content_scale_score_variables)
 
-print(content_scale_score_table)
+# MARK BASC INSTRUMENT AS COMPLETE
+basc_df['basc_complete'] = 2
 
-# Save the table values to the dataframe:
-basc_df = save_table_values(basc_df, content_scale_score_table, content_scale_score_variables)
 
-# ---------------------------------------------------------------------------- #
-
-# %%
 # ---------------------------------------------------------------------------- #
 #                     EXPORT DATA TO CSV FOR REDCAP IMPORT                     #
 # ---------------------------------------------------------------------------- #
-# Find parent directory of basc_filepath:
-output_dir = os.path.dirname(basc_pdf_filepath)
-# Export the basc_df to csv:
-basc_df.to_csv(f'{output_dir}/{pidn}_{visit}_basc-{basc_version}.csv', index=False)
+# # Find parent directory of basc_filepath:
+# output_dir = os.path.dirname(basc_pdf_filepath)
+# # Export the basc_df to csv:
+# basc_df.to_csv(f'{output_dir}/{pidn}_{visit}_basc-{basc_version}.csv', index=False)
 
-# %%
+
 # ---------------------------------------------------------------------------- #
 #                        IMPORT THE DATA BACK TO REDCAP                        #
 # ---------------------------------------------------------------------------- #
@@ -306,114 +350,107 @@ basc_df.to_csv(f'{output_dir}/{pidn}_{visit}_basc-{basc_version}.csv', index=Fal
 # Import the basc_df back to REDCap via API using import_data_redcap:
 import_data_redcap(token, basc_df, data='raw', headers='raw', overwriteBehavior='normal')
 
-
-# %%
 # ---------------------------------------------------------------------------- #
 #                                 FINISHING UP                                 #
 # ---------------------------------------------------------------------------- #
 # Delete the PDF from the directory:
 os.remove(basc_pdf_filepath)
 
-# Delete API Token from memory:
+# Delete Token, PIDN, and Visit Number from memory:
 del token
+del pidn
+del visit
+
 # %%
-# %%
-#%% TEMP - BASC 3 VALIDITY INDEX TESTING
 
-# for filename in df['basc3_pdf_filename']:
-#     print(f'\nExtracting data from {filename}...')
+# TODO: VALIDITY INDEX SUMMARY TABLE IS TOO WACK:
 
-#     with open(directory + filename, 'rb') as file:
-#         pdf_reader = PdfReader(file)
+# def clean_validity_index(table):
+#     # If there are multiple rows, merge the values in the first and last rows
+#     # as long as neither value is NaN:
+#     if table.shape[0] > 1:
+#         if pd.notna(table.iloc[-1,0]):
+#             table.iloc[0,0] = str(table.iloc[0,0]) + "\r" + str(table.iloc[-1,0])
+#         if pd.notna(table.iloc[-1,1]):
+#             table.iloc[0,1] = str(table.iloc[0,1]) + "\r" + str(table.iloc[-1,1])
+#         if pd.notna(table.iloc[-1,2]):
+#             table.iloc[0,2] = str(table.iloc[0,2]) + "\r" + str(table.iloc[-1,2])
 
-#         # Find the string "Composite Score Summary" in the pdf and save the page number as css_page:
-#         composite_score_page = None
-#         scale_score_page = None
-#         content_scale_score_page = None
-#         validity_index_page = None
+#         # Drop all rows except the first:
+#         table = table.drop(table.index[1:])
 
-#         for i, page in enumerate(pdf_reader.pages):
-#             text = page.extract_text()
-#             if 'Composite Score Summary' in text:
-#                 composite_score_page = i + 1
-#             if 'Scale Score Summary' in text:
-#                 scale_score_page = i + 1
-#             if 'CONTENT SCALE SCORE TABLE:' in text:
-#                 content_scale_score_page = i + 1
-#             if 'VALIDITY INDEX SUMMARY' in text:
-#                 validity_index_page = i + 1
-
-
-
-# TODO: VALIDITY INDEX SUMMARY
-#     # NOTE: NOT WORKING YET - VALIDITY TABLE IS SCREWING UP VALUES DEPENDING ON RATING TEXT
-#     # Find the page number that contains the table titled: "Validity Index Summary":
-#     data = tb.read_pdf(directory + filename, pages=validity_index_page, multiple_tables=True)
+#     # Make a new row and add the column names to the new row as values:
+#     table.loc[1] = ['','','']
+#     # Add the column names to the new row as values:
+#     table.iloc[1,0] = table.columns[0]
+#     table.iloc[1,1] = table.columns[1]
+#     table.iloc[1,2] = table.columns[2]
     
-#     # Find the table number that contains the string "Response Pattern":
-#     for i, table in enumerate(data):
-#         if 'Response Pattern' in table.to_string():
-#             table_number = i
+#     # Create another row for the table and split the values in the first row into the new row at the string "\r":
+#     table.loc[2] = ['','','']
+#     table.iloc[2,0] = table.iloc[0,0].split('\r')[0]
+#     table.iloc[2,1] = table.iloc[0,1].split('\r')[0]
+#     table.iloc[2,2] = table.iloc[0,2].split('\r')[0]
+
+#     # Create another row and take the values from the first row after "Raw Score: "
+#     table.loc[3] = ['','','']
+#     table.iloc[3,0] = table.iloc[0,0].split('Raw Score: ')[1]
+#     table.iloc[3,1] = table.iloc[0,1].split('Raw Score: ')[1]
+#     table.iloc[3,2] = table.iloc[0,2].split('Raw Score: ')[1]
+
+#     # Remove the first row:
+#     table = table.drop([0])
+
+#     # Flip the table:
+#     table = table.transpose()
+
+#     # Remove trailing or tailing spaces in the whole table:
+#     table = table.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
+
+#     # Reset the index:
+#     table.reset_index(drop=True, inplace=True)
+
+#     # Set the first column name to "Domain"
+#     table.rename(columns={table.columns[0]: 'Domain'}, inplace=True)
+#     # Set the second column name to "Rating"
+#     table.rename(columns={table.columns[1]: 'Rating'}, inplace=True)
+#     # Set the third column name to "Raw Score"
+#     table.rename(columns={table.columns[2]: 'Raw Score'}, inplace=True)
+
+#     return table
+
+# def save_validity_index(df, table, variables_dict):
+#     #NOTE:TODO: THIS MAY OVERWRITE ALL THE VALUES IN THE DATAFRAME FOR THE GIVEN COLUMNS, ONLY WORKS FOR ONE PIDN FOR NOW
+#     # Change the rating values to numbers:
+#     validity_index_rating_scores = {'Acceptable': 1,
+#                                     'Caution': 2,
+#                                     'Extreme Caution': 3}
+#     # Change the rating scores to numbers using the validity_index_rating_scores dictionary:
+#     table['Rating'] = table['Rating'].map(validity_index_rating_scores)
+
+#     for variable in variables_dict:
+#         # Save the rating to the dataframe to the column that matches the variable name + "_rating":
+#         df[variables_dict[variable] + '_rating'] = table.loc[table['Domain'] == variable, 'Rating'].values[0]
+#         # Save the raw score to the dataframe to the column that matches the variable name + "_raw":
+#         df[variables_dict[variable] + '_raw'] = table.loc[table['Domain'] == variable, 'Raw Score'].values[0]
+#     return df
 
 
-#     if len(data[table_number]) == 1:
-#         # Make data into a df:
-#         vis_df = pd.DataFrame(data[table_number])
-#         # Add a new row with blanks:
-#         vis_df.loc[1] = ['','','']
-#         vis_df.loc[2] = ['','','']
 
-#         # Split the values in the first row into the second row at the string "\r":
-#         vis_df.iloc[1,0] = vis_df.iloc[0,0].split('\r')[0]
-#         vis_df.iloc[1,1] = vis_df.iloc[0,1].split('\r')[0]
-#         vis_df.iloc[1,2] = vis_df.iloc[0,2].split('\r')[0]
-
-#         # Split the values in the first row into the third row after the string "Raw Score:  ":
-#         vis_df.iloc[2,0] = vis_df.iloc[0,0].split('Raw Score: ')[1]
-#         vis_df.iloc[2,1] = vis_df.iloc[0,1].split('Raw Score: ')[1]
-#         vis_df.iloc[2,2] = vis_df.iloc[0,2].split('Raw Score: ')[1]
-
-#         # Remove the first row and reset index:
-#         vis_df = vis_df.drop([0])
-#         vis_df = vis_df.reset_index(drop=True)
-
-#         # Return vis_df to data as a tb list:
-#         data[table_number] = vis_df
-
-#     if len(data[table_number]) == 2:
-
-#     # If data[table_number] has 3 rows, then print ("boop")
-#     elif len(data[table_number]) == 3:
-#         # Remove the second row:
-#         data[table_number] = data[table_number].drop([1])
-#         # Reset the index:
-#         data[table_number] = data[table_number].reset_index(drop=True)
-#         # Replace the string "Raw Score: " with ""
-#         data[table_number] = data[table_number].replace({'Raw Score:  ': ''}, regex=True)
-
-#     # Replace the index for row 1 with "Rating:"
-#     data[table_number].rename(index={0: 'Rating:'}, inplace=True)
-#     # Replace the index for row 2 with "Raw Score:"
-#     data[table_number].rename(index={1: 'Raw Score:'}, inplace=True)
-
-#    # Replace the term "Acceptable" with 1:
-#     data[table_number] = data[table_number].replace({'Acceptable': 1}, regex=True)
-#     # Replace the term "Extreme Caution" with 3:
-#     data[table_number] = data[table_number].replace({'Extreme Caution': 3}, regex=True)
-#     # Replace the term "Caution" with 2:
-#     data[table_number] = data[table_number].replace({'Caution': 2}, regex=True)
-
-
-#     # Print the table:
-#     print(data[table_number])
-
-#     # Save the values into their corresponding columns in the df:
-#     # F Index = basc_findex_rating, basc_findex_raw
-#     df.loc[df['basc3_pdf_filename'] == filename, 'basc_findex_rating'] = data[table_number].iloc[0,0]
-#     df.loc[df['basc3_pdf_filename'] == filename, 'basc_findex_raw'] = data[table_number].iloc[1,0]
-#     # Response Pattern = basc_responsepattern_rating, basc_responsepattern_raw
-#     df.loc[df['basc3_pdf_filename'] == filename, 'basc_responsepattern_rating'] = data[table_number].iloc[0,1]
-#     df.loc[df['basc3_pdf_filename'] == filename, 'basc_responsepattern_raw'] = data[table_number].iloc[1,1]
-#     # Consistency = basc_consistency_rating, basc_consistency_raw
-#     df.loc[df['basc3_pdf_filename'] == filename, 'basc_consistency_rating'] = data[table_number].iloc[0,2]
-#     df.loc[df['basc3_pdf_filename'] == filename, 'basc_consistency_raw'] = data[table_number].iloc[1,2]
+# # VALIDITY INDEX SUMMARY TABLE:
+# if validity_index_page is not None:    
+#     if basc_version == 3:
+#         validity_index_variables = {'F Index': 'basc_findex',
+#                                     'Response Pattern': 'basc_responsepattern',
+#                                     'Consistency': 'basc_consistency'}
+#     elif basc_version == 2:
+#         validity_index_variables = {'F': 'basc_findex',
+#                                     'Response Pattern': 'basc_responsepattern',
+#                                     'Consistency': 'basc_consistency'}
+#     # Find the table:
+#     validity_index_table = data[find_table_index(data, validity_index_variables.keys())]
+#     # Clean the table:
+#     validity_index_table = clean_validity_index(validity_index_table)
+#     print(validity_index_table) 
+#     # Save the table values to the dataframe:
+#     basc_df = save_validity_index(basc_df, validity_index_table, validity_index_variables)
