@@ -25,7 +25,6 @@ import openpyxl
 import pandas as pd
 import pingouin as pg
 import plotly as py
-import progressbar
 import ptitprince as pt
 import requests
 import scipy.stats as stats
@@ -34,14 +33,9 @@ import sklearn
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 import tabula as tb
-import zentables as zen
 from joblib import Parallel, delayed
 from matplotlib.cm import get_cmap
 from matplotlib.colors import Normalize
-from nilearn.image import get_data, resample_to_img
-from nilearn.input_data import NiftiLabelsMasker
-from nilearn.maskers import NiftiMasker
-from nilearn.plotting import plot_stat_map, show
 from PyPDF2 import PdfReader
 from sklearn import model_selection
 from sklearn.feature_selection import VarianceThreshold
@@ -100,6 +94,8 @@ visit = input("Enter REDCap Visit Number to export (e.g. 'visit_one_arm_1'):")
 instrument = 'basc'
 # Export the specified instrument for that case:
 basc_df = export_single_case_single_instrument_redcap(token, pidn, instrument, visit)
+# Replace all nans with blanks in the df:
+basc_df = basc_df.replace(np.nan, '', regex=True)
 
 # ---------------------------------------------------------------------------- #
 # Check which BASC Version is specified in REDCap:
@@ -109,10 +105,24 @@ if basc_df['basc_version'].values[0] == 3:
 elif basc_df['basc_version'].values[0] == 2:
     field = 'basc2_upload'
     print('BASC Version 2 Specified.')
-else:
-    print('ERROR: BASC Version not specified.')
-    print('Please specify BASC Version in REDCap and try again.')
-    sys.exit()
+elif basc_df['basc_version'].values[0] == '':
+    # Check for uploaded BASC-3 or BASC-2 PDFs:
+    if basc_df['basc3_upload'].values[0] != '' and basc_df['basc2_upload'].values[0] == '':
+        print(f'BASC-3 PDF found. Extracting data from {basc_df["basc3_upload"].values[0]}...')
+        field = 'basc3_upload'
+        basc_df['basc_version'].values[0] = 3
+    elif basc_df['basc3_upload'].values[0] == '' and basc_df['basc2_upload'].values[0] != '':
+        print(f'BASC-2 PDF found. Extracting data from {basc_df["basc2_upload"].values[0]}...')
+        field = 'basc2_upload'
+        basc_df['basc_version'].values[0] = 2
+    elif basc_df['basc3_upload'].values[0] != '' and basc_df['basc2_upload'].values[0] != '':
+        print('ERROR: Both BASC-3 and BASC-2 PDFs found.')
+        print('Please ensure the REDCap BASC page only has one uploaded file per visit or specify which version to choose in "basc_version" and try again.')
+        sys.exit()
+    elif basc_df['basc3_upload'].values[0] == '' and basc_df['basc2_upload'].values[0] == '':
+        print('ERROR: No BASC-3 or BASC-2 PDFs found.')
+        print('Please upload the BASC-3 or BASC-2 PDF to REDCap and try again.')
+        sys.exit()
 
 basc_version = basc_df['basc_version'].values[0]
 # ---------------------------------------------------------------------------- #
@@ -130,14 +140,11 @@ elif basc_df[field].values[0] != '':
 basc_pdf = export_redcap_file(token, pidn, visit, field)
 basc_pdf_filepath = basc_pdf.name
 
-
-
 # ---------------------------------------------------------------------------- #
 #                               DEFINE FUNCTIONS                               #
 # ---------------------------------------------------------------------------- #
 
 # TODO: SCRIPT NOT SAVING VALUES!!!! UGH!!!
-
 # TODO: CHECK IF THE PDF IF SELF-REPORT
 
 def find_page_index(pdf_reader, keywords):
@@ -225,7 +232,6 @@ def find_string_in_text(full_text, keyword_start, keyword_end):
         text = text.strip()
         # Return the text:
         return text
-    
 
 # ---------------------------------------------------------------------------- #
 
@@ -235,7 +241,8 @@ def find_string_in_text(full_text, keyword_start, keyword_end):
 with open(basc_pdf_filepath, 'rb') as file:
     pdf_reader = PdfReader(file)
     
-    # Find the page numbers for the tables:
+    # Find the page numbers of interest:
+    date_page = find_page_index(pdf_reader, ['Test Date:'])
     comments_concerns_page = find_page_index(pdf_reader, ['COMMENTS AND CONCERNS', 'Rater Concerns'])
     composite_score_page = find_page_index(pdf_reader, ['Composite Score Summary'])
     scale_score_page = find_page_index(pdf_reader, ['Scale Score Summary'])
@@ -244,7 +251,28 @@ with open(basc_pdf_filepath, 'rb') as file:
 
 data = tb.read_pdf(basc_pdf_filepath, pages='all', multiple_tables=True)
 
+# FIND BASC DATE STRING IN TEXT:
+if date_page is not None:
+    # Extract the page text:
+    date_text = extract_page_text(pdf_reader, date_page)
 
+    # Set the keywords:
+    keyword_date_start = 'Test Date:'
+    keyword_date_end = 'Rater'
+
+    # Find the date string in the text:
+    basc_date = find_string_in_text(date_text, keyword_date_start, keyword_date_end)
+    # Remove any text in the basc_date string after the first space:
+    basc_date = basc_date.split(' ')[0]
+    # Set basc_date to YYYY-MM-DD format:
+    basc_date = datetime.datetime.strptime(basc_date, '%m/%d/%Y').strftime('%Y-%m-%d')
+    print(f'BASC Date Found: {basc_date}')
+
+    # Apply date to appropriate column in dataframe:
+    if basc_version == 3:
+        basc_df['basc3_date'] = basc_date
+    elif basc_version == 2:
+        basc_df['basc2_date'] = basc_date
 
 # COMMENTS AND CONCERNS TEXT:
 if comments_concerns_page is not None:
@@ -331,7 +359,6 @@ if content_scale_score_page is not None:
 
 # MARK BASC INSTRUMENT AS COMPLETE
 basc_df['basc_complete'] = 2
-
 
 # ---------------------------------------------------------------------------- #
 #                     EXPORT DATA TO CSV FOR REDCAP IMPORT                     #
@@ -454,3 +481,7 @@ del visit
 #     print(validity_index_table) 
 #     # Save the table values to the dataframe:
 #     basc_df = save_validity_index(basc_df, validity_index_table, validity_index_variables)
+
+298# %%
+
+# %%
